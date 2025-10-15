@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 # SYSTÈME D'AUTHENTIFICATION
 # ============================================================================
 
-def check_password():
+def check_auth():
     """
     Système d'authentification simple.
     Retourne True si l'utilisateur est authentifié.
@@ -538,4 +538,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
