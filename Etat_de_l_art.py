@@ -329,6 +329,12 @@ def main():
         page_icon="📚",
         layout="wide"
     )
+
+    # ========================================================================
+    # AUTHENTIFICATION - PREMIÈRE CHOSE À VÉRIFIER
+    # ========================================================================
+    if not check_auth():
+        st.stop()  # Arrête tout si pas authentifié
     
     st.title("📚 Générateur d'État de l'Art Scientifique")
     st.markdown("*Propulsé par Semantic Scholar et Gemini*")
@@ -532,3 +538,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
