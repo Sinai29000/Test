@@ -180,7 +180,7 @@ class SemanticScholarAPI:
         params = {
             'query': query,
             'limit': limit,
-            'fields': 'title,abstract,authors,year,citationCount,publicationDate,url,paperId'
+            'fields': 'title,abstract,authors,year,citationCount,publicationDate,url,paperId,tldr,openAccessPdf'
         }
         
         try:
@@ -199,7 +199,7 @@ class SemanticScholarAPI:
         """
         url = f"{self.base_url}/paper/{paper_id}"
         params = {
-            'fields': 'title,abstract,authors,year,citationCount,references,citations,url'
+            'fields': 'title,abstract,authors,year,citationCount,references,citations,url,tldr,openAccessPdf,externalIds'
         }
         
         try:
@@ -209,6 +209,32 @@ class SemanticScholarAPI:
         except requests.exceptions.RequestException as e:
             st.error(f"Erreur lors de la récupération de l'article: {str(e)}")
             return None
+    
+    def fetch_paper_content(self, paper: Dict) -> Optional[str]:
+        """
+        Tente de récupérer le contenu complet d'un article pour extraire un résumé.
+        Essaie plusieurs sources : TLDR de Semantic Scholar, PDF Open Access, etc.
+        """
+        paper_id = paper.get('paperId')
+        if not paper_id:
+            return None
+        
+        # Récupère les détails complets incluant TLDR et PDF
+        details = self.get_paper_details(paper_id)
+        if not details:
+            return None
+        
+        # 1. Essaye d'abord le TLDR (résumé automatique de Semantic Scholar)
+        if details.get('tldr') and details['tldr'].get('text'):
+            return details['tldr']['text']
+        
+        # 2. Vérifie si un PDF Open Access est disponible
+        open_access = details.get('openAccessPdf')
+        if open_access and open_access.get('url'):
+            st.info(f"📄 PDF Open Access disponible pour: {paper.get('title', '')[:50]}...")
+            return f"PDF disponible à: {open_access['url']}"
+        
+        return None
 
 
 # ============================================================================
@@ -221,34 +247,64 @@ class LiteratureReviewGenerator:
     def __init__(self, llm: LLMProvider):
         self.llm = llm
     
-    def summarize_paper(self, paper: Dict) -> str:
+    def summarize_paper(self, paper: Dict, semantic_api: 'SemanticScholarAPI') -> str:
         """
         Génère un résumé court d'un article pour la liste de validation.
+        Tente d'abord d'utiliser l'abstract, puis le TLDR, puis cherche le contenu complet.
         """
         title = paper.get('title', 'Sans titre')
-        abstract = paper.get('abstract', 'Pas de résumé disponible')
+        abstract = paper.get('abstract', None)
         year = paper.get('year', 'N/A')
         
-        # Si pas d'abstract, retourne un message par défaut
-        if not abstract or abstract == 'Pas de résumé disponible':
-            return "Résumé non disponible pour cet article."
-        
-        prompt = f"""
-        Résume cet article scientifique en 2-3 phrases maximum, en français.
-        Concentre-toi sur la contribution principale et les résultats clés.
-        
-        Titre: {title}
-        Année: {year}
-        Résumé: {abstract[:1000]}
-        """
-        
-        summary = self.llm.generate(prompt)
-        
-        # Si la génération échoue, retourne l'abstract tronqué
-        if not summary or summary.strip() == "":
+        # 1. Si abstract disponible, l'utiliser
+        if abstract and abstract.strip():
+            prompt = f"""
+            Résume cet article scientifique en 2-3 phrases maximum, en français.
+            Concentre-toi sur la contribution principale et les résultats clés.
+            
+            Titre: {title}
+            Année: {year}
+            Résumé: {abstract[:1000]}
+            """
+            
+            summary = self.llm.generate(prompt)
+            if summary and summary.strip():
+                return summary
             return abstract[:300] + "..."
         
-        return summary
+        # 2. Si pas d'abstract, essayer le TLDR de Semantic Scholar
+        tldr = paper.get('tldr')
+        if tldr and tldr.get('text'):
+            tldr_text = tldr['text']
+            prompt = f"""
+            Traduis et reformule ce résumé en français (2-3 phrases):
+            
+            Titre: {title}
+            TLDR: {tldr_text}
+            """
+            summary = self.llm.generate(prompt)
+            if summary and summary.strip():
+                return summary
+            return tldr_text
+        
+        # 3. Chercher du contenu supplémentaire via l'API
+        additional_content = semantic_api.fetch_paper_content(paper)
+        if additional_content:
+            if additional_content.startswith("PDF disponible"):
+                return f"Résumé non disponible dans l'API. {additional_content}"
+            
+            prompt = f"""
+            Résume ce contenu en 2-3 phrases en français:
+            
+            Titre: {title}
+            Contenu: {additional_content[:500]}
+            """
+            summary = self.llm.generate(prompt)
+            if summary and summary.strip():
+                return summary
+        
+        # 4. Si rien n'est disponible, indiquer clairement
+        return f"⚠️ Résumé non disponible pour cet article. Consultez l'article complet via le lien fourni."
     
     def generate_full_review(self, papers: List[Dict], question: str) -> str:
         """
@@ -263,13 +319,23 @@ class LiteratureReviewGenerator:
             if len(authors_list) > 3:
                 authors += " et al."
             
+            # Utilise l'abstract, ou le TLDR, ou le summary généré
+            abstract = paper.get('abstract', None)
+            if abstract and abstract.strip():
+                abstract_text = abstract[:800]
+            elif paper.get('tldr') and paper.get('tldr').get('text'):
+                abstract_text = paper['tldr']['text']
+            else:
+                # Utilise le summary qui a été généré par summarize_paper
+                abstract_text = paper.get('summary', 'Non disponible')[:800]
+            
             info = f"""
             Article {i}:
             - Titre: {paper.get('title', 'N/A')}
             - Auteurs: {authors}
             - Année: {paper.get('year', 'N/A')}
             - Citations: {paper.get('citationCount', 0)}
-            - Résumé: {paper.get('abstract', 'Non disponible')[:800]}
+            - Résumé: {abstract_text}
             """
             papers_info.append(info)
         
@@ -459,7 +525,7 @@ def main():
         # Génère les résumés
         with st.spinner("✍️ Génération des résumés..."):
             for paper in papers:
-                paper['summary'] = review_generator.summarize_paper(paper)
+                paper['summary'] = review_generator.summarize_paper(paper, semantic_api)
         
         st.session_state.papers = papers
         st.session_state.search_done = True
