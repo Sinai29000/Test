@@ -132,9 +132,15 @@ class LLMProvider:
 class SemanticScholarAPI:
     """Gère les interactions avec l'API Semantic Scholar"""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, api_key: Optional[str] = None):
         self.config = config
         self.base_url = config.semantic_scholar_api_url
+        self.api_key = api_key
+        self.headers = {}
+        
+        # Si une clé API est fournie, l'ajouter aux headers
+        if self.api_key:
+            self.headers['x-api-key'] = self.api_key
     
     def extract_keywords(self, question: str, llm: LLMProvider) -> List[str]:
         """
@@ -178,7 +184,7 @@ class SemanticScholarAPI:
         }
         
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, headers=self.headers)
             response.raise_for_status()
             data = response.json()
             return data.get('data', [])
@@ -197,7 +203,7 @@ class SemanticScholarAPI:
         }
         
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, headers=self.headers)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -352,6 +358,13 @@ def main():
             help="Obtenir une clé sur https://makersuite.google.com/app/apikey"
         )
         
+        # Clé API Semantic Scholar
+        ss_api_key = st.text_input(
+            "Clé API Semantic Scholar (optionnelle)",
+            type="password",
+            help="Obtenir une clé sur https://www.semanticscholar.org/product/api"
+        )
+        
         # Sélection du modèle
         model_choice = st.selectbox(
             "Modèle Gemini",
@@ -390,7 +403,7 @@ def main():
     # ========================================================================
     config = Config(max_articles=max_articles)
     llm = LLMProvider(api_key=api_key, model_name=model_choice)
-    semantic_api = SemanticScholarAPI(config)
+    semantic_api = SemanticScholarAPI(config, api_key=ss_api_key if ss_api_key else None)
     review_generator = LiteratureReviewGenerator(llm)
     
     # Initialise l'état de session
@@ -538,5 +551,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-
-
