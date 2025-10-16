@@ -187,7 +187,21 @@ class SemanticScholarAPI:
             response = requests.get(url, params=params, headers=self.headers)
             response.raise_for_status()
             data = response.json()
+            
+            # Affiche des infos sur l'utilisation de la clé API
+            if self.api_key:
+                st.success("✅ Clé API Semantic Scholar utilisée")
+            else:
+                st.info("ℹ️ Recherche sans clé API (limites réduites)")
+            
             return data.get('data', [])
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                st.error("⚠️ Limite de taux atteinte. Veuillez patienter quelques secondes et réessayer.")
+                st.info("💡 Astuce : Réduisez le nombre d'articles ou attendez 1 minute avant de relancer.")
+            else:
+                st.error(f"Erreur API Semantic Scholar: {str(e)}")
+            return []
         except requests.exceptions.RequestException as e:
             st.error(f"Erreur API Semantic Scholar: {str(e)}")
             return []
@@ -250,7 +264,7 @@ class LiteratureReviewGenerator:
     def summarize_paper(self, paper: Dict, semantic_api: 'SemanticScholarAPI') -> str:
         """
         Génère un résumé court d'un article pour la liste de validation.
-        Tente d'abord d'utiliser l'abstract, puis le TLDR, puis cherche le contenu complet.
+        Tente d'abord d'utiliser l'abstract, puis le TLDR (déjà récupéré lors de la recherche).
         """
         title = paper.get('title', 'Sans titre')
         abstract = paper.get('abstract', None)
@@ -272,7 +286,7 @@ class LiteratureReviewGenerator:
                 return summary
             return abstract[:300] + "..."
         
-        # 2. Si pas d'abstract, essayer le TLDR de Semantic Scholar
+        # 2. Si pas d'abstract, essayer le TLDR de Semantic Scholar (déjà dans les données)
         tldr = paper.get('tldr')
         if tldr and tldr.get('text'):
             tldr_text = tldr['text']
@@ -287,24 +301,16 @@ class LiteratureReviewGenerator:
                 return summary
             return tldr_text
         
-        # 3. Chercher du contenu supplémentaire via l'API
-        additional_content = semantic_api.fetch_paper_content(paper)
-        if additional_content:
-            if additional_content.startswith("PDF disponible"):
-                return f"Résumé non disponible dans l'API. {additional_content}"
-            
-            prompt = f"""
-            Résume ce contenu en 2-3 phrases en français:
-            
-            Titre: {title}
-            Contenu: {additional_content[:500]}
-            """
-            summary = self.llm.generate(prompt)
-            if summary and summary.strip():
-                return summary
+        # 3. Vérifier si un PDF Open Access est disponible (déjà dans les données)
+        open_access = paper.get('openAccessPdf')
+        if open_access and open_access.get('url'):
+            return f"⚠️ Résumé non disponible dans l'API. PDF Open Access disponible à: {open_access['url']}"
         
         # 4. Si rien n'est disponible, indiquer clairement
-        return f"⚠️ Résumé non disponible pour cet article. Consultez l'article complet via le lien fourni."
+        paper_url = paper.get('url', '')
+        if paper_url:
+            return f"⚠️ Résumé non disponible. Consultez l'article complet: {paper_url}"
+        return f"⚠️ Résumé non disponible pour cet article."
     
     def generate_full_review(self, papers: List[Dict], question: str) -> str:
         """
@@ -524,8 +530,16 @@ def main():
         
         # Génère les résumés
         with st.spinner("✍️ Génération des résumés..."):
-            for paper in papers:
-                paper['summary'] = review_generator.summarize_paper(paper, semantic_api)
+            for i, paper in enumerate(papers):
+                # Ajoute un délai pour respecter les limites de taux de l'API
+                if i > 0:
+                    time.sleep(1.0)  # Pause de 1 seconde entre chaque résumé
+                
+                try:
+                    paper['summary'] = review_generator.summarize_paper(paper, semantic_api)
+                except Exception as e:
+                    st.warning(f"⚠️ Erreur lors de la génération du résumé pour '{paper.get('title', 'Article')[:50]}...': {str(e)}")
+                    paper['summary'] = f"Erreur de génération. Consultez l'article: {paper.get('url', 'URL non disponible')}"
         
         st.session_state.papers = papers
         st.session_state.search_done = True
